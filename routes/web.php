@@ -1,8 +1,7 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ProductController;
-use App\Http\Controllers\UserController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -15,23 +14,8 @@ use App\Http\Controllers\UserController;
 |
 */
 
-// Route::get('/', function () {
-//     return view('welcome');
-// });
-
-Route::get('logout', [UserController::class, 'logout'])->name('logout');
-Route::group(['middleware' => 'auth'], function () {
-    Route::get('/', function () {
-        return view('dashboard');
-    });
-
-    Route::resource('products', ProductController::class);
-});
-
-
-Route::get('/admin/dashboard', function () {
-    return view('admin.dashboard');
-})->middleware(['auth:admin'])->name('admin.dashboard');
-
-require __DIR__.'/auth.php';
-require __DIR__.'/adminauth.php';
+Route::get('/', [ProductController::class, 'index']);
+Route::post('/checkout', [ProductController::class, 'checkout'])->name('checkout');
+Route::get('/success', [ProductController::class, 'success'])->name('checkout.success');
+Route::get('/cancel', [ProductController::class, 'cancel'])->name('checkout.cancel');
+Route::post('/webhook', [ProductController::class, 'webhook'])->name('checkout.webhook');

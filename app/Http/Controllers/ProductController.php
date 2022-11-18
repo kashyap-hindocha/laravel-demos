@@ -2,152 +2,129 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Order;
 use App\Models\Product;
+use http\Env\Response;
 use Illuminate\Http\Request;
-use DataTables;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class ProductController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     *
-     * @return \Illuminate\Http\Response
-     */
     public function index(Request $request)
     {
-        if ($request->ajax()) {
+        $products = Product::all();
 
-            $data = Product::where('user_id', \Auth::user()->id)->latest()->get();
-
-            return DataTables::of($data)
-                    ->addIndexColumn()
-                    ->editColumn('image', function($row) {
-                        return $row->image ? $row->image : '';
-                    })
-                    ->addColumn('action', function($row){
-
-                           $btn = '<a href="javascript:void(0)" data-toggle="tooltip"  data-id="'.$row->id.'" data-original-title="Edit" class="edit btn btn-primary btn-sm editProduct">Edit</a>';
-
-                           $btn = $btn.' <a href="javascript:void(0)" data-toggle="tooltip"  data-id="'.$row->id.'" data-original-title="Delete" class="btn btn-danger btn-sm deleteProduct">Delete</a>';
-
-                            return $btn;
-                    })
-                    ->rawColumns(['action'])
-                    ->make(true);
-        }
-
-        return view('products.index');
+        return view('product.index', compact('products'));
     }
 
-    /**
-     * Show the form for creating a new resource.
-     *
-     * @return \Illuminate\Http\Response
-     */
-    public function create()
+    public function checkout()
     {
-        // return view('products.create');
-    }
+        \Stripe\Stripe::setApiKey(env('STRIPE_SECRET_KEY'));
 
-    /**
-     * Store a newly created resource in storage.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\Response
-     */
-    public function store(Request $request)
-    {
-        $validate = \Validator::make($request->all(), [
-            'name' => 'required',
-            'price' => 'required',
-            'discount' => 'required',
-            'image' => 'required|image|mimes:png,jpg,jpeg|max:2048',
-            'description' => 'required',
-        ]);
-        if($validate->fails()){
-          return response()->json([
-            'status' => 400,
-            'errors' => $validate->messages(),
-          ]);
+        $products = Product::all();
+        $lineItems = [];
+        $totalPrice = 0;
+        foreach ($products as $product) {
+            $totalPrice += $product->price;
+            $lineItems[] = [
+                'price_data' => [
+                    'currency' => 'usd',
+                    'product_data' => [
+                        'name' => $product->name,
+                        'images' => [$product->image]
+                    ],
+                    'unit_amount' => $product->price * 100,
+                ],
+                'quantity' => 1,
+            ];
         }
-        if ($request->hasFile('image')) {
-            $file = $request->file('image');
-            $ext = $file->getClientOriginalExtension ();
-            $fileName = '_'.time().'_.'.$ext;
-            $file->move('storage/uploads/images', $fileName);
-        }
-        Product::updateOrCreate([
-            'id' => $request->product_id
-        ],
-        [
-            'name' => $request->name,
-            'price' => $request->price,
-            'discount' => $request->discount,
-            'user_id' => \Auth::user()->id,
-            'image' => $fileName,
-            'description' => $request->description
+        $session = \Stripe\Checkout\Session::create([
+            'line_items' => $lineItems,
+            'mode' => 'payment',
+            'success_url' => route('checkout.success', [], true) . "?session_id={CHECKOUT_SESSION_ID}",
+            'cancel_url' => route('checkout.cancel', [], true),
         ]);
 
-        return response()->json(['success'=>'Product saved successfully.']);
+        $order = new Order();
+        $order->status = 'unpaid';
+        $order->total_price = $totalPrice;
+        $order->session_id = $session->id;
+        $order->save();
+
+        return redirect($session->url);
     }
 
-    /**
-     * Display the specified resource.
-     *
-     * @param  \App\Models\Product  $product
-     * @return \Illuminate\Http\Response
-     */
-    public function show(Product $product)
+    public function success(Request $request)
     {
-        // return view('products.show',compact('product'));
-    }
+        \Stripe\Stripe::setApiKey(env('STRIPE_SECRET_KEY'));
+        $sessionId = $request->get('session_id');
 
-    /**
-     * Show the form for editing the specified resource.
-     *
-     * @param  \App\Models\Product  $product
-     * @return \Illuminate\Http\Response
-     */
-    public function edit($id)
-    {
-        $product = Product::find($id);
-        return response()->json($product);
-    }
+        try {
+            $session = \Stripe\Checkout\Session::retrieve($sessionId);
+            if (!$session) {
+                throw new NotFoundHttpException;
+            }
+            $customer = \Stripe\Customer::retrieve($session->customer);
 
-    /**
-     * Update the specified resource in storage.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \App\Models\Product  $product
-     * @return \Illuminate\Http\Response
-     */
-    public function update(Request $request, Product $product)
-    {
-        $validate = \Validator::make($request->all(), [
-            'name' => 'required',
-            'price' => 'required',
-            'discount' => 'required',
-            'description' => 'required',
-        ]);
-        if($validate->fails()){
-          return response()->json([
-            'status' => 400,
-            'error' => $validate->messages()
-            ]);
+            $order = Order::where('session_id', $session->id)->first();
+            if (!$order) {
+                throw new NotFoundHttpException();
+            }
+            if ($order->status === 'unpaid') {
+                $order->status = 'paid';
+                $order->save();
+            }
+
+            return view('product.checkout-success', compact('customer'));
+        } catch (\Exception $e) {
+            throw new NotFoundHttpException();
         }
-        $product->update($request->all());
+
     }
 
-    /**
-     * Remove the specified resource from storage.
-     *
-     * @param  \App\Models\Product  $product
-     * @return \Illuminate\Http\Response
-     */
-    public function destroy($id)
+    public function cancel()
     {
-        Product::find($id)->delete();
 
-        return response()->json(['success'=>'Product deleted successfully.']);
+    }
+
+    public function webhook()
+    {
+        // This is your Stripe CLI webhook secret for testing your endpoint locally.
+        $endpoint_secret = env('STRIPE_WEBHOOK_SECRET');
+
+        $payload = @file_get_contents('php://input');
+        $sig_header = $_SERVER['HTTP_STRIPE_SIGNATURE'];
+        $event = null;
+
+        try {
+            $event = \Stripe\Webhook::constructEvent(
+                $payload, $sig_header, $endpoint_secret
+            );
+        } catch (\UnexpectedValueException $e) {
+            // Invalid payload
+            return response('', 400);
+        } catch (\Stripe\Exception\SignatureVerificationException $e) {
+            // Invalid signature
+            return response('', 400);
+        }
+
+// Handle the event
+        switch ($event->type) {
+            case 'checkout.session.completed':
+                $session = $event->data->object;
+
+                $order = Order::where('session_id', $session->id)->first();
+                if ($order && $order->status === 'unpaid') {
+                    $order->status = 'paid';
+                    $order->save();
+                    // Send email to customer
+                }
+
+            // ... handle other event types
+            default:
+                echo 'Received unknown event type ' . $event->type;
+        }
+
+        return response('');
     }
 }
